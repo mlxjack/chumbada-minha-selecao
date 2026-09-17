@@ -12,8 +12,8 @@
 
   var BRIDGE_ORIGIN = (window.MINHA_SELECAO_BRIDGE_URL || 'https://selecao.chumbada.com.br').replace(/\/$/, '');
   var WHATSAPP_NUMBER = '5511941900602';
-  var MIN_ORDER = 900;
   var WHATSAPP_TEXT_LIMIT = 1800; // encoded length guard before falling back to clipboard
+  var HUB_HOSTNAME = window.MINHA_SELECAO_HUB_HOSTNAME || 'catalogosdeprecos.chumbada.com.br';
 
   var CATALOG_LABELS = {
     iscas: 'Iscas',
@@ -167,11 +167,7 @@
       + '.ms-remove{background:none;border:0;color:#c33;font-size:12px;cursor:pointer;padding:0;}'
       + '.ms-line-total{font-size:13px;font-weight:700;}'
       + '.ms-foot{flex:0 0 auto;border-top:1px solid #eee;padding:14px 18px 18px;}'
-      + '.ms-total-row{display:flex;justify-content:space-between;font-size:15px;font-weight:700;margin-bottom:8px;}'
-      + '.ms-progress-wrap{background:#f0f0f0;border-radius:9999px;height:8px;overflow:hidden;margin-bottom:6px;}'
-      + '.ms-progress-fill{height:100%;background:#ff6a00;transition:width .2s ease;}'
-      + '.ms-progress-label{font-size:12px;color:#666;margin-bottom:10px;}'
-      + '.ms-progress-label.ms-ok{color:#1a7d33;}'
+      + '.ms-total-row{display:flex;justify-content:space-between;font-size:15px;font-weight:700;margin-bottom:12px;}'
       + '.ms-send{width:100%;padding:12px;border:0;border-radius:8px;background:#25D366;color:#fff;'
       + 'font-size:15px;font-weight:700;cursor:pointer;font-family:Arial,sans-serif;}'
       + '.ms-send[disabled]{background:#ccc;cursor:not-allowed;}'
@@ -180,7 +176,12 @@
       + 'opacity:0;transition:opacity .2s ease;pointer-events:none;}'
       + '.ms-toast.ms-show{opacity:1;}'
       + '.ms-page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}'
-      + '.ms-back{color:#ff6a00;text-decoration:none;font-size:14px;font-weight:600;}';
+      + '.ms-back{color:#ff6a00;text-decoration:none;font-size:14px;font-weight:600;}'
+      + '.ms-hub-link{position:fixed;left:16px;top:16px;z-index:999995;display:inline-flex;align-items:center;'
+      + 'gap:6px;padding:9px 14px;border-radius:999px;background:#fff;color:#ff6a00;border:1.5px solid #ff6a00;'
+      + 'font-family:Arial,sans-serif;font-size:13px;font-weight:700;text-decoration:none;'
+      + 'box-shadow:0 2px 8px rgba(0,0,0,.15);}'
+      + '.ms-hub-link:hover{background:#fff5ec;}';
     var style = document.createElement('style');
     style.setAttribute('data-minha-selecao', '');
     style.textContent = css;
@@ -209,6 +210,19 @@
     var count = totalQty(state.items);
     badgeEl.textContent = String(count);
     badgeEl.style.display = count > 0 ? 'flex' : 'none';
+  }
+
+  // ---------------------------------------------------------------------
+  // Back-to-hub link (every catalog except the hub itself)
+  // ---------------------------------------------------------------------
+
+  function renderBackToHub() {
+    if (location.hostname === HUB_HOSTNAME) return;
+    var a = document.createElement('a');
+    a.className = 'ms-hub-link';
+    a.href = 'https://' + HUB_HOSTNAME + '/';
+    a.textContent = '← Voltar aos catálogos';
+    document.body.appendChild(a);
   }
 
   // ---------------------------------------------------------------------
@@ -270,17 +284,9 @@
     }
 
     var subtotal = subtotalOf(items);
-    var pct = Math.max(0, Math.min(100, (subtotal / MIN_ORDER) * 100));
-    var reachedMin = subtotal >= MIN_ORDER;
-    var canSend = items.length > 0 && reachedMin;
+    var canSend = items.length > 0;
 
     footEl.innerHTML = '<div class="ms-total-row"><span>Total</span><span>' + formatBRL(subtotal) + '</span></div>'
-      + '<div class="ms-progress-wrap"><div class="ms-progress-fill" style="width:' + pct + '%"></div></div>'
-      + '<div class="ms-progress-label' + (reachedMin ? ' ms-ok' : '') + '">'
-      + (reachedMin
-        ? 'Pedido mínimo atingido ✓'
-        : 'Faltam ' + formatBRL(MIN_ORDER - subtotal) + ' para o pedido mínimo de ' + formatBRL(MIN_ORDER))
-      + '</div>'
       + '<button class="ms-send"' + (canSend ? '' : ' disabled') + '>Enviar pedido via WhatsApp</button>';
 
     footEl.querySelector('.ms-send').addEventListener('click', function () {
@@ -429,9 +435,6 @@
 
     lines.push('');
     lines.push('*TOTAL GERAL: ' + formatBRL(total) + '*');
-    if (total < MIN_ORDER) {
-      lines.push('Pedido mínimo: ' + formatBRL(MIN_ORDER) + ' — faltam ' + formatBRL(MIN_ORDER - total));
-    }
     lines.push('');
     lines.push('Pedido gerado via chumbada.com.br');
     return lines.join('\n');
@@ -508,6 +511,7 @@
     injectStyles();
     initBridge();
     renderFab();
+    renderBackToHub();
     checkHash();
     window.addEventListener('hashchange', checkHash);
   }
