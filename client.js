@@ -309,9 +309,7 @@
       var subtotal = subtotalOf(items);
       footHtml += '<div class="ms-total-row"><span>Total</span><span>' + formatBRL(subtotal) + '</span></div>';
     }
-    if (MODE === 'pdf') {
-      footHtml += '<button class="ms-clear-all"' + (canSend ? '' : ' disabled') + '>Limpar lista</button>';
-    }
+    footHtml += '<button class="ms-clear-all"' + (canSend ? '' : ' disabled') + '>Limpar lista</button>';
     footHtml += '<button class="ms-send"' + (canSend ? '' : ' disabled') + '>'
       + (MODE === 'pdf' ? 'Salvar como PDF' : 'Enviar pedido via WhatsApp') + '</button>';
 
@@ -524,7 +522,6 @@
     }
 
     openLink(url);
-    call('CLEAR', {});
     closeDrawer();
   }
 
