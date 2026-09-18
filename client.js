@@ -10,7 +10,9 @@
   if (window.__minhaSelecaoLoaded) return;
   window.__minhaSelecaoLoaded = true;
 
-  var BRIDGE_ORIGIN = (window.MINHA_SELECAO_BRIDGE_URL || 'https://selecao.chumbada.com.br').replace(/\/$/, '');
+  var WORKER_URL = (window.MINHA_SELECAO_WORKER_URL || 'https://chumbada-minha-selecao.chumbada-oficial.workers.dev').replace(/\/$/, '');
+  var SID_COOKIE = 'chumbada_selecao_sid';
+  var SID_DOMAIN = window.MINHA_SELECAO_COOKIE_DOMAIN !== undefined ? window.MINHA_SELECAO_COOKIE_DOMAIN : '.chumbada.com.br';
   var WHATSAPP_NUMBER = '5511941900602';
   var WHATSAPP_TEXT_LIMIT = 1800; // encoded length guard before falling back to clipboard
   var HUB_HOSTNAME = window.MINHA_SELECAO_HUB_HOSTNAME || 'catalogosdeprecos.chumbada.com.br';
@@ -25,67 +27,69 @@
   var CATALOG_ORDER = ['iscas', 'anzois', 'chumbadas', 'acessorios', 'oculos'];
 
   var state = { storeName: '', items: [] };
-  var ready = false;
-  var queue = [];
-  var pending = {};
-  var seq = 0;
-  var iframe;
+  var sid = null;
 
   // ---------------------------------------------------------------------
-  // Bridge RPC
+  // Session id — a first-party, same-site cookie shared by every
+  // *.chumbada.com.br subdomain. Unlike the old third-party iframe
+  // approach, this is never partitioned or wiped by Safari's ITP, since
+  // it's a normal cookie set directly by whichever catalog page the
+  // customer is on, not by a cross-site iframe.
   // ---------------------------------------------------------------------
 
-  function initBridge() {
-    iframe = document.createElement('iframe');
-    iframe.src = BRIDGE_ORIGIN + '/bridge.html';
-    iframe.setAttribute('aria-hidden', 'true');
-    iframe.style.cssText = 'position:absolute;width:0;height:0;border:0;top:-9999px;left:-9999px;';
-    document.body.appendChild(iframe);
-    iframe.addEventListener('load', function () {
-      iframe.contentWindow.postMessage({ type: 'HELLO' }, BRIDGE_ORIGIN);
-    });
-    window.addEventListener('message', onBridgeMessage);
+  function readCookie(name) {
+    var match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+    return match ? decodeURIComponent(match[1]) : null;
   }
 
-  function onBridgeMessage(e) {
-    if (e.origin !== BRIDGE_ORIGIN || !iframe || e.source !== iframe.contentWindow) return;
-    var msg = e.data || {};
-
-    if (msg.type === 'READY') {
-      ready = true;
-      var pendingQueue = queue;
-      queue = [];
-      pendingQueue.forEach(function (run) { run(); });
-      call('GET_STATE', {}).then(function (s) { state = s; renderAll(); });
-      return;
+  function getSid() {
+    if (sid) return sid;
+    sid = readCookie(SID_COOKIE);
+    if (!sid) {
+      sid = (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : ('sid-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+      var cookieStr = SID_COOKIE + '=' + encodeURIComponent(sid) + '; path=/; max-age=' + (60 * 60 * 24 * 365) + '; samesite=lax';
+      if (SID_DOMAIN) cookieStr += '; domain=' + SID_DOMAIN;
+      if (location.protocol === 'https:') cookieStr += '; secure';
+      document.cookie = cookieStr;
     }
-
-    if (msg.type === 'STATE_CHANGED') {
-      state = msg.state;
-      renderAll();
-      return;
-    }
-
-    if (msg.id && pending[msg.id]) {
-      var resolve = pending[msg.id];
-      delete pending[msg.id];
-      if (msg.ok) {
-        state = msg.state;
-        resolve(msg.state);
-        renderAll();
-      }
-    }
+    return sid;
   }
+
+  // ---------------------------------------------------------------------
+  // Worker API
+  // ---------------------------------------------------------------------
+
+  // Each request gets a sequence number, and a response only gets applied
+  // if it's newer than whatever was last applied. Separate fetch() calls
+  // aren't guaranteed to resolve in the order they were sent (e.g. a
+  // GET_STATE refresh fired when the drawer opens can resolve after a
+  // rapid ADJUST_QTY click that followed it) — without this guard, an
+  // older response arriving late would silently overwrite the display
+  // with stale data even though the server's own data is correct.
+  var callSeq = 0;
+  var appliedSeq = 0;
 
   function call(type, payload) {
-    return new Promise(function (resolve) {
-      var run = function () {
-        var id = 'm' + (++seq);
-        pending[id] = resolve;
-        iframe.contentWindow.postMessage({ id: id, type: type, payload: payload }, BRIDGE_ORIGIN);
-      };
-      if (ready) run(); else queue.push(run);
-    });
+    var thisSeq = ++callSeq;
+    return fetch(WORKER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid: getSid(), type: type, payload: payload })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json && json.ok && thisSeq > appliedSeq) {
+          appliedSeq = thisSeq;
+          state = json.state;
+          renderAll();
+        }
+        return state;
+      })
+      .catch(function () {
+        return state;
+      });
   }
 
   // ---------------------------------------------------------------------
@@ -327,6 +331,7 @@
     backdropEl.classList.add('ms-open');
     drawerEl.classList.add('ms-open');
     renderListInto(drawerBodyEl, drawerFootEl);
+    call('GET_STATE', {});
   }
 
   function closeDrawer() {
@@ -369,6 +374,7 @@
       ensurePage();
       pageEl.classList.add('ms-open');
       renderListInto(pageBodyEl, pageFootEl);
+      call('GET_STATE', {});
     } else if (pageEl) {
       pageEl.classList.remove('ms-open');
     }
@@ -510,9 +516,9 @@
 
   function boot() {
     injectStyles();
-    initBridge();
     renderFab();
     renderBackToHub();
+    call('GET_STATE', {});
     checkHash();
     window.addEventListener('hashchange', checkHash);
   }
