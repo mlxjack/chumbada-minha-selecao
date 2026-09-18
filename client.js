@@ -10,12 +10,21 @@
   if (window.__minhaSelecaoLoaded) return;
   window.__minhaSelecaoLoaded = true;
 
+  // 'whatsapp' (catálogos com preço) or 'pdf' (catálogos sem preço) — set
+  // window.MINHA_SELECAO_MODE = 'pdf' before this script loads to switch.
+  var MODE = window.MINHA_SELECAO_MODE || 'whatsapp';
+  var SHOW_PRICE = MODE !== 'pdf';
+
   var WORKER_URL = (window.MINHA_SELECAO_WORKER_URL || 'https://chumbada-minha-selecao.chumbada-oficial.workers.dev').replace(/\/$/, '');
-  var SID_COOKIE = 'chumbada_selecao_sid';
+  // Separate cookie per mode so the com-preço (WhatsApp) list and the
+  // sem-preço (PDF) list never mix, even though both share the same
+  // .chumbada.com.br domain and the same Worker.
+  var SID_COOKIE = MODE === 'pdf' ? 'chumbada_lista_sid' : 'chumbada_selecao_sid';
   var SID_DOMAIN = window.MINHA_SELECAO_COOKIE_DOMAIN !== undefined ? window.MINHA_SELECAO_COOKIE_DOMAIN : '.chumbada.com.br';
   var WHATSAPP_NUMBER = '5511941900602';
   var WHATSAPP_TEXT_LIMIT = 1800; // encoded length guard before falling back to clipboard
   var HUB_HOSTNAME = window.MINHA_SELECAO_HUB_HOSTNAME || 'catalogosdeprecos.chumbada.com.br';
+  var JSPDF_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js';
 
   var CATALOG_LABELS = {
     iscas: 'Iscas',
@@ -186,7 +195,10 @@
       + 'gap:6px;padding:9px 14px;border-radius:999px;background:#fff;color:#ff6a00;border:1.5px solid #ff6a00;'
       + 'font-family:Arial,sans-serif;font-size:13px;font-weight:700;text-decoration:none;'
       + 'box-shadow:0 2px 8px rgba(0,0,0,.15);}'
-      + '.ms-hub-link:hover{background:#fff5ec;}';
+      + '.ms-hub-link:hover{background:#fff5ec;}'
+      + '.ms-clear-all{width:100%;padding:9px;margin-bottom:8px;border:1px solid #ddd;background:#fff;'
+      + 'color:#c33;border-radius:8px;font-size:13px;cursor:pointer;font-family:Arial,sans-serif;}'
+      + '.ms-clear-all:hover{background:#fff5f5;}';
     var style = document.createElement('style');
     style.setAttribute('data-minha-selecao', '');
     style.textContent = css;
@@ -203,8 +215,10 @@
     fabEl = document.createElement('button');
     fabEl.className = 'ms-fab';
     fabEl.setAttribute('aria-label', 'Abrir Minha Seleção');
-    fabEl.innerHTML = '<svg viewBox="0 0 24 24"><path d="M7 18c-1.1 0-1.99.9-1.99 2S5.9 22 7 22s2-.9 2-2-.9-2-2-2zM1 2v2h2l3.6 7.59-1.35 2.45c-.16.28-.25.61-.25.96 0 1.1.9 2 2 2h12v-2H7.42c-.14 0-.25-.11-.25-.25l.03-.12L8.1 13h7.45c.75 0 1.41-.41 1.75-1.03L20.87 5H4.54l-.94-2H1zM17 18c-1.1 0-1.99.9-1.99 2s.89 2 1.99 2 2-.9 2-2-.9-2-2-2z"/></svg>'
-      + '<span class="ms-badge" style="display:none">0</span>';
+    var iconSvg = MODE === 'pdf'
+      ? '<svg viewBox="0 0 24 24"><path d="M6 2c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6H6zm7 7V3.5L18.5 9H13zM7 12h10v2H7v-2zm0 4h7v2H7v-2z"/></svg>'
+      : '<svg viewBox="0 0 24 24"><path d="M7 18c-1.1 0-1.99.9-1.99 2S5.9 22 7 22s2-.9 2-2-.9-2-2-2zM1 2v2h2l3.6 7.59-1.35 2.45c-.16.28-.25.61-.25.96 0 1.1.9 2 2 2h12v-2H7.42c-.14 0-.25-.11-.25-.25l.03-.12L8.1 13h7.45c.75 0 1.41-.41 1.75-1.03L20.87 5H4.54l-.94-2H1zM17 18c-1.1 0-1.99.9-1.99 2s.89 2 1.99 2 2-.9 2-2-.9-2-2-2z"/></svg>';
+    fabEl.innerHTML = iconSvg + '<span class="ms-badge" style="display:none">0</span>';
     badgeEl = fabEl.querySelector('.ms-badge');
     fabEl.addEventListener('click', toggleDrawer);
     document.body.appendChild(fabEl);
@@ -253,7 +267,7 @@
             + '<p class="ms-row-name">' + escapeHTML(it.name) + '</p>'
             + (it.variant ? '<p class="ms-row-variant">' + escapeHTML(it.variant) + '</p>' : '')
             + (it.sku ? '<p class="ms-row-sku">SKU: ' + escapeHTML(it.sku) + '</p>' : '')
-            + '<p class="ms-row-price">' + formatBRL(it.unitPrice) + ' un.</p>'
+            + (SHOW_PRICE ? '<p class="ms-row-price">' + formatBRL(it.unitPrice) + ' un.</p>' : '')
             + '</div>'
             + '<div class="ms-row-controls">'
             + '<button class="ms-remove" data-action="remove">remover</button>'
@@ -262,7 +276,7 @@
             + '<span>' + it.qty + '</span>'
             + '<button data-action="inc">+</button>'
             + '</div>'
-            + '<div class="ms-line-total">' + formatBRL(it.qty * it.unitPrice) + '</div>'
+            + (SHOW_PRICE ? '<div class="ms-line-total">' + formatBRL(it.qty * it.unitPrice) + '</div>' : '')
             + '</div>'
             + '</div>';
         });
@@ -288,16 +302,34 @@
       });
     }
 
-    var subtotal = subtotalOf(items);
     var canSend = items.length > 0;
+    var footHtml = '';
 
-    footEl.innerHTML = '<div class="ms-total-row"><span>Total</span><span>' + formatBRL(subtotal) + '</span></div>'
-      + '<button class="ms-send"' + (canSend ? '' : ' disabled') + '>Enviar pedido via WhatsApp</button>';
+    if (SHOW_PRICE) {
+      var subtotal = subtotalOf(items);
+      footHtml += '<div class="ms-total-row"><span>Total</span><span>' + formatBRL(subtotal) + '</span></div>';
+    }
+    if (MODE === 'pdf') {
+      footHtml += '<button class="ms-clear-all"' + (canSend ? '' : ' disabled') + '>Limpar lista</button>';
+    }
+    footHtml += '<button class="ms-send"' + (canSend ? '' : ' disabled') + '>'
+      + (MODE === 'pdf' ? 'Salvar como PDF' : 'Enviar pedido via WhatsApp') + '</button>';
+
+    footEl.innerHTML = footHtml;
 
     footEl.querySelector('.ms-send').addEventListener('click', function () {
       if (!canSend) return;
-      sendOrder();
+      if (MODE === 'pdf') exportPdf(); else sendOrder();
     });
+
+    var clearBtn = footEl.querySelector('.ms-clear-all');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', function () {
+        if (!canSend) return;
+        if (!confirm('Tem certeza que quer apagar toda a lista?')) return;
+        call('CLEAR', {});
+      });
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -494,6 +526,94 @@
     openLink(url);
     call('CLEAR', {});
     closeDrawer();
+  }
+
+  // ---------------------------------------------------------------------
+  // PDF export (sem-preço catalogs)
+  // ---------------------------------------------------------------------
+
+  var jsPdfLoading = null;
+
+  function loadJsPdf() {
+    if (window.jspdf && window.jspdf.jsPDF) return Promise.resolve();
+    if (jsPdfLoading) return jsPdfLoading;
+    jsPdfLoading = new Promise(function (resolve, reject) {
+      var script = document.createElement('script');
+      script.src = JSPDF_URL;
+      script.onload = function () { resolve(); };
+      script.onerror = function () { reject(new Error('failed to load jsPDF')); };
+      document.head.appendChild(script);
+    });
+    return jsPdfLoading;
+  }
+
+  function exportPdf() {
+    loadJsPdf().then(function () {
+      var doc = new window.jspdf.jsPDF();
+      var pageHeight = doc.internal.pageSize.getHeight();
+      var marginBottom = 20;
+      var y = 18;
+
+      function ensureSpace(lines) {
+        if (y + lines * 6 > pageHeight - marginBottom) {
+          doc.addPage();
+          y = 18;
+        }
+      }
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.text('Minha Seleção — Chumbada Oficial', 14, y);
+      y += 8;
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(120);
+      doc.text('Gerado em ' + new Date().toLocaleDateString('pt-BR'), 14, y);
+      y += 6;
+      if (state.storeName) {
+        doc.text('Nome: ' + state.storeName, 14, y);
+        y += 6;
+      }
+      doc.setTextColor(0);
+      y += 4;
+
+      var groups = groupByCatalog(state.items);
+      CATALOG_ORDER.forEach(function (cat) {
+        var list = groups[cat];
+        if (!list || !list.length) return;
+
+        ensureSpace(2);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(12);
+        doc.text(CATALOG_LABELS[cat], 14, y);
+        y += 7;
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        list.forEach(function (it, idx) {
+          ensureSpace(2);
+          var line1 = (idx + 1) + '. ' + it.name + (it.variant ? ' — ' + it.variant : '');
+          var line2Parts = ['Qtd: ' + it.qty];
+          if (it.sku) line2Parts.push('SKU: ' + it.sku);
+          doc.setTextColor(0);
+          doc.text(line1, 16, y);
+          y += 5;
+          doc.setTextColor(110);
+          doc.text(line2Parts.join('   |   '), 18, y);
+          y += 7;
+        });
+        y += 2;
+      });
+
+      doc.setTextColor(150);
+      doc.setFontSize(9);
+      doc.text('chumbada.com.br', 14, pageHeight - 10);
+
+      doc.save('minha-selecao-chumbada.pdf');
+    }).catch(function () {
+      showToast('Não deu pra gerar o PDF agora, tenta de novo.');
+    });
   }
 
   // ---------------------------------------------------------------------

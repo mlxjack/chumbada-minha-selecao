@@ -1,10 +1,18 @@
 const ALLOWED_ORIGINS = new Set([
+  // Catálogos com preço — lista "Minha Seleção" (modo WhatsApp)
   'https://precodasiscas.chumbada.com.br',
   'https://precosdosanzois.chumbada.com.br',
   'https://precodaschumbadas.chumbada.com.br',
   'https://precodosacessorios.chumbada.com.br',
   'https://precodosoculos.chumbada.com.br',
   'https://catalogosdeprecos.chumbada.com.br',
+  // Catálogos sem preço — lista "Minha Seleção" (modo PDF)
+  'https://iscas.chumbada.com.br',
+  'https://anzois.chumbada.com.br',
+  'https://chumbadas.chumbada.com.br',
+  'https://acessorios.chumbada.com.br',
+  'https://oculos.chumbada.com.br',
+  'https://catalogos.chumbada.com.br',
 ]);
 
 function isAllowedOrigin(origin) {
