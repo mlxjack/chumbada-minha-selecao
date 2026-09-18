@@ -99,12 +99,14 @@
       case 'ADJUST_QTY': {
         // Relative delta applied by the bridge itself (not the caller's cached
         // qty) so rapid clicks queue correctly instead of racing against
-        // whatever qty value each caller last rendered.
+        // whatever qty value each caller last rendered. Floors at 1 — the qty
+        // stepper can never delete a line, only the explicit "remover" button
+        // (REMOVE_ITEM) can, so an extra click on "−" can't silently drop a
+        // product from the list.
         var delta = Math.floor(Number((payload || {}).delta) || 0);
         for (var j = 0; j < state.items.length; j++) {
           if (state.items[j].id === payload.id) {
-            state.items[j].qty += delta;
-            if (state.items[j].qty <= 0) state.items.splice(j, 1);
+            state.items[j].qty = Math.max(1, state.items[j].qty + delta);
             break;
           }
         }
@@ -137,10 +139,24 @@
 
     if (e.origin !== parentOrigin) return;
 
-    var state = readState();
-    var nextState = handle(msg.type, msg.payload, state);
-    writeState(nextState);
-    e.source.postMessage({ id: msg.id, ok: true, state: nextState }, e.origin);
+    // Serialize read-modify-write across every tab/catalog that has this
+    // bridge open — without this, two tabs adding items around the same
+    // moment could each read the list before the other's write lands, and
+    // whichever writes last would silently overwrite the other's item.
+    // Web Locks are coordinated per-origin by the browser itself, so this
+    // covers concurrent tabs even though each has its own bridge iframe.
+    var apply = function () {
+      var state = readState();
+      var nextState = handle(msg.type, msg.payload, state);
+      writeState(nextState);
+      e.source.postMessage({ id: msg.id, ok: true, state: nextState }, e.origin);
+    };
+
+    if (navigator.locks && navigator.locks.request) {
+      navigator.locks.request('chumbada-minha-selecao-lock', apply);
+    } else {
+      apply();
+    }
   });
 
   // Cross-tab sync: when another tab's bridge iframe (same origin) writes a
