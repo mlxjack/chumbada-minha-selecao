@@ -1,67 +1,75 @@
-# Minha Seleção — bridge site
+# Minha Seleção — client script + backend
 
-Site estático "ponte" que permite aos catálogos **com preço** da Chumbada Oficial
-compartilharem uma única lista de produtos ("Minha Seleção") entre si, mesmo
-estando em subdomínios diferentes.
+Deixa os catálogos **com preço** da Chumbada Oficial compartilharem uma
+única lista de produtos ("Minha Seleção") entre si, mesmo estando em
+subdomínios diferentes.
 
-## Por que existe
+## Histórico: por que não é mais um iframe + localStorage
 
-Cada catálogo (iscas, anzóis, chumbadas, acessórios, óculos) é um site separado
-em um subdomínio próprio de `chumbada.com.br`, sem backend/banco de dados. Como
-`localStorage` não é compartilhado entre subdomínios diferentes, este site serve
-como a única origem que efetivamente guarda a lista: todos os catálogos carregam
-um iframe invisível apontando para `bridge.html` deste site, e conversam com ele
-via `postMessage`. Como todos carregam o **mesmo** iframe (mesma origem), todos
-enxergam o mesmo `localStorage` — e assim a lista fica sincronizada entre eles,
-sem servidor.
+A primeira versão sincronizava os catálogos com um iframe invisível
+(`bridge.html`) que guardava tudo em `localStorage` — sem servidor, sem
+custo. Funcionava bem em navegador de computador, mas no Safari/iOS
+(usado pela maioria dos clientes no celular) esbarrou numa limitação
+conhecida do navegador: o Safari **particiona** o armazenamento de sites
+"terceiros" (que é exatamente o que um iframe cross-domain é, do ponto de
+vista de cada catálogo) por combinação de (site que está por cima, origem
+do iframe) — cada catálogo enxergava sua própria cópia isolada — e **apaga
+esse armazenamento sempre que o Safari é relançado** (trocar de app, tela
+bloquear, o sistema liberar memória). Na prática, isso significava carrinho
+esvaziando sozinho durante o uso normal no iPhone.
 
-## Arquivos
+## Arquitetura atual
 
-- `bridge.html` — dono do `localStorage` canônico. Só ele lê/escreve os dados.
-- `client.js` — script único incluído em cada catálogo (`<script src="https://selecao.chumbada.com.br/client.js" defer></script>`).
-  Cria o iframe, fala com `bridge.html`, e renderiza o botão flutuante, a gaveta
-  lateral, a página cheia (usada pelo hub) e o envio para o WhatsApp.
-- `index.html` — página de fallback caso alguém visite o domínio diretamente.
+- **`client.js`** — o mesmo script único incluído em cada catálogo
+  (`<script src="https://selecao.chumbada.com.br/client.js" defer></script>`).
+  Continua cuidando do botão flutuante, da gaveta lateral, da página cheia
+  do hub e do envio pro WhatsApp — só a camada de dados mudou.
+- **Identificação do cliente**: um cookie (`chumbada_selecao_sid`) com
+  `Domain=.chumbada.com.br`, criado pelo próprio `client.js` na primeira
+  visita a qualquer catálogo. Por ser um cookie de primeira parte
+  (same-site, criado pela própria página do catálogo, não por um iframe
+  de outro domínio), ele não sofre nenhuma das restrições de terceiros do
+  Safari — é só um cookie normal, do jeito que navegadores lidam bem há
+  décadas.
+- **`worker/`** — um Cloudflare Worker (gratuito) com uma **Durable
+  Object** por sessão, que guarda a lista de produtos de cada cliente.
+  Cada aba/catálogo manda esse código de sessão junto com cada pedido
+  (`fetch` direto pro Worker, não mais `postMessage` pra um iframe). Como
+  cada sessão tem sua própria Durable Object, e Durable Objects processam
+  uma requisição de cada vez, várias abas do mesmo cliente adicionando
+  produto ao mesmo tempo não conseguem mais se atropelar (nem precisa de
+  trava manual, como era necessário no bridge antigo).
 
-## Protocolo (postMessage)
+## Escopo
 
-Handshake: o `client.js` manda `{type:'HELLO'}` para a origem do bridge; o bridge
-responde `{type:'READY'}` — a partir daí ele memoriza a origem do "pai" e só
-aceita novas mensagens vindas dela.
+Só os catálogos **com preço** participam (iscas, anzóis, chumbadas,
+acessórios, óculos) + o hub `catalogosdeprecos.chumbada.com.br`. Os
+catálogos e o hub **sem preço** não incluem este script e não têm a
+funcionalidade.
 
-Chamadas (`parent → bridge`), cada uma com `id` para casar com a resposta:
+## Fazendo deploy do Worker
 
-```js
-{ id, type: 'GET_STATE' }
-{ id, type: 'ADD_ITEM', payload: { catalog, productId, name, sku, variant, qty, unitPrice } }
-{ id, type: 'ADJUST_QTY', payload: { id, delta } }    // delta é relativo (+1/-1); a ponte aplica sobre o valor atual, nunca o chamador — evita corrida em cliques rápidos. Resultado <= 0 remove o item.
-{ id, type: 'REMOVE_ITEM', payload: { id } }
-{ id, type: 'CLEAR' }
-{ id, type: 'SET_STORE_NAME', payload: { storeName } }
+```bash
+cd worker
+npx wrangler deploy
 ```
 
-Resposta (`bridge → parent`): `{ id, ok: true, state: { storeName, items } }`
-
-Broadcast não solicitado (`bridge → parent`), disparado quando outra aba (mesmo
-navegador, outro catálogo) muda a lista: `{ type: 'STATE_CHANGED', state }`.
+Requer login prévio (`npx wrangler login`) numa conta Cloudflare com
+acesso ao Worker `chumbada-minha-selecao` (subdomínio
+`chumbada-oficial.workers.dev`).
 
 ## Identidade de item / dedupe
 
 `id = catalog + '::' + (sku || productId) + '::' + variação normalizada`
 
-Adicionar o mesmo produto+variação duas vezes soma a quantidade em vez de criar
-uma linha duplicada. `acessórios` não tem SKU — usa `productId` (o `id` numérico
-do produto) como chave.
+Adicionar o mesmo produto+variação duas vezes soma a quantidade em vez de
+criar uma linha duplicada. `acessórios` não tem SKU — usa `productId` (o
+`id` numérico do produto) como chave.
 
 ## Lista de origens permitidas
 
-`bridge.html` só aceita mensagens dos 6 domínios "com preço" (mais `localhost`
-para testes locais — inofensivo, já que `event.origin` não pode ser falsificado
-pelo conteúdo de uma página). Ao adicionar um novo catálogo com preço, é preciso
-incluir seu domínio em `ALLOWED_ORIGINS` dentro de `bridge.html`.
-
-## Escopo
-
-Só os catálogos **com preço** participam (iscas, anzóis, chumbadas, acessórios,
-óculos) + o hub `catalogosdeprecos.chumbada.com.br`. Os catálogos e o hub
-**sem preço** não incluem este script e não têm a funcionalidade.
+O Worker (`worker/src/index.js`) só aceita requisições dos 6 domínios
+"com preço" (mais `localhost` para testes locais — inofensivo, já que o
+cabeçalho `Origin` não pode ser falsificado pelo conteúdo de uma página).
+Ao adicionar um novo catálogo com preço, é preciso incluir seu domínio em
+`ALLOWED_ORIGINS` ali.
