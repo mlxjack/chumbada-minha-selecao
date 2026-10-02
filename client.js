@@ -22,7 +22,6 @@
   var SID_COOKIE = MODE === 'pdf' ? 'chumbada_lista_sid' : 'chumbada_selecao_sid';
   var SID_DOMAIN = window.MINHA_SELECAO_COOKIE_DOMAIN !== undefined ? window.MINHA_SELECAO_COOKIE_DOMAIN : '.chumbada.com.br';
   var WHATSAPP_NUMBER = '5511941900602';
-  var WHATSAPP_TEXT_LIMIT = 1800; // encoded length guard before falling back to clipboard
   var HUB_HOSTNAME = window.MINHA_SELECAO_HUB_HOSTNAME || 'catalogosdeprecos.chumbada.com.br';
   var JSPDF_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js';
 
@@ -185,6 +184,11 @@
       + '.ms-send{width:100%;padding:12px;border:0;border-radius:8px;background:#25D366;color:#fff;'
       + 'font-size:15px;font-weight:700;cursor:pointer;font-family:Arial,sans-serif;}'
       + '.ms-send[disabled]{background:#ccc;cursor:not-allowed;}'
+      + '.ms-actions{display:flex;gap:8px;}'
+      + '.ms-actions .ms-send{flex:1 1 55%;padding:12px 8px;}'
+      + '.ms-dl{flex:1 1 45%;padding:12px 8px;border:1.5px solid #25D366;border-radius:8px;background:#fff;'
+      + 'color:#1a9c4a;font-size:15px;font-weight:700;cursor:pointer;font-family:Arial,sans-serif;}'
+      + '.ms-dl[disabled]{border-color:#ccc;color:#aaa;cursor:not-allowed;}'
       + '.ms-toast{position:fixed;left:50%;bottom:92px;transform:translateX(-50%);background:#1a1a1a;color:#fff;'
       + 'padding:10px 16px;border-radius:8px;font-size:13px;font-family:Arial,sans-serif;z-index:9999999;'
       + 'opacity:0;transition:opacity .2s ease;pointer-events:none;}'
@@ -310,15 +314,28 @@
       footHtml += '<div class="ms-total-row"><span>Total</span><span>' + formatBRL(subtotal) + '</span></div>';
     }
     footHtml += '<button class="ms-clear-all"' + (canSend ? '' : ' disabled') + '>Limpar lista</button>';
-    footHtml += '<button class="ms-send"' + (canSend ? '' : ' disabled') + '>'
-      + (MODE === 'pdf' ? 'Salvar como PDF' : 'Enviar pedido via WhatsApp') + '</button>';
+    if (MODE === 'pdf') {
+      footHtml += '<button class="ms-send"' + (canSend ? '' : ' disabled') + '>Salvar como PDF</button>';
+    } else {
+      footHtml += '<div class="ms-actions">'
+        + '<button class="ms-send"' + (canSend ? '' : ' disabled') + '>Compartilhar PDF</button>'
+        + '<button class="ms-dl"' + (canSend ? '' : ' disabled') + '>Baixar PDF</button>'
+        + '</div>';
+    }
 
     footEl.innerHTML = footHtml;
 
     footEl.querySelector('.ms-send').addEventListener('click', function () {
       if (!canSend) return;
-      if (MODE === 'pdf') exportPdf(); else sendOrder();
+      if (MODE === 'pdf') downloadPdf(); else sharePdf();
     });
+
+    var dlBtn = footEl.querySelector('.ms-dl');
+    if (dlBtn) {
+      dlBtn.addEventListener('click', function () {
+        if (canSend) downloadPdf();
+      });
+    }
 
     var clearBtn = footEl.querySelector('.ms-clear-all');
     if (clearBtn) {
@@ -362,6 +379,7 @@
     drawerEl.classList.add('ms-open');
     renderListInto(drawerBodyEl, drawerFootEl);
     call('GET_STATE', {});
+    preloadJsPdf();
   }
 
   function closeDrawer() {
@@ -405,6 +423,7 @@
       pageEl.classList.add('ms-open');
       renderListInto(pageBodyEl, pageFootEl);
       call('GET_STATE', {});
+      preloadJsPdf();
     } else if (pageEl) {
       pageEl.classList.remove('ms-open');
     }
@@ -426,7 +445,7 @@
 
   var toastEl, toastTimer;
 
-  function showToast(msg) {
+  function showToast(msg, ms) {
     if (!toastEl) {
       toastEl = document.createElement('div');
       toastEl.className = 'ms-toast';
@@ -435,66 +454,185 @@
     toastEl.textContent = msg;
     toastEl.classList.add('ms-show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { toastEl.classList.remove('ms-show'); }, 2200);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('ms-show'); }, ms || 2200);
   }
 
   // ---------------------------------------------------------------------
-  // WhatsApp message + send
+  // PDF — build, download and share. A wa.me link can never carry a file,
+  // so on phones we use the system share sheet, where the customer picks
+  // WhatsApp and then the salesperson's contact.
   // ---------------------------------------------------------------------
 
-  function buildMessage() {
-    var groups = groupByCatalog(state.items);
-    var lines = [];
-    lines.push('Olá! Meu nome/loja: *' + (state.storeName || '(não informado)') + '*');
-    lines.push('');
-    lines.push('Segue minha Seleção de produtos Chumbada Oficial:');
+  var jsPdfLoading = null;
+
+  function loadJsPdf() {
+    if (window.jspdf && window.jspdf.jsPDF) return Promise.resolve();
+    if (jsPdfLoading) return jsPdfLoading;
+    jsPdfLoading = new Promise(function (resolve, reject) {
+      var script = document.createElement('script');
+      script.src = JSPDF_URL;
+      script.onload = function () { resolve(); };
+      script.onerror = function () {
+        jsPdfLoading = null;
+        reject(new Error('failed to load jsPDF'));
+      };
+      document.head.appendChild(script);
+    });
+    return jsPdfLoading;
+  }
+
+  // Loaded ahead of time (when the list is opened) so the share button can
+  // build the PDF synchronously inside the tap — Safari drops the share
+  // permission if we wait on a network request first.
+  function preloadJsPdf() {
+    loadJsPdf().catch(function () { /* retried on demand */ });
+  }
+
+  function pdfMoney(n) {
+    return formatBRL(n).replace(/ /g, ' ');
+  }
+
+  function pdfFileName() {
+    var slug = (state.storeName || '')
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    var d = new Date();
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    var date = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    return (MODE === 'pdf' ? 'minha-selecao-chumbada' : 'pedido-chumbada')
+      + (slug ? '-' + slug : '') + '-' + date + '.pdf';
+  }
+
+  function buildPdfDoc() {
+    var doc = new window.jspdf.jsPDF();
+    var pageW = doc.internal.pageSize.getWidth();
+    var pageH = doc.internal.pageSize.getHeight();
+    var left = 14;
+    var right = pageW - 14;
+    var top = 18;
+    var bottom = pageH - 18;
+    var y = top;
+
+    function ensureSpace(h) {
+      if (y + h > bottom) {
+        doc.addPage();
+        y = top;
+      }
+    }
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.setTextColor(0);
+    doc.text(MODE === 'pdf' ? 'Minha Seleção — Chumbada Oficial' : 'Pedido — Chumbada Oficial', left, y);
+    y += 8;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(120);
+    doc.text('Gerado em ' + new Date().toLocaleDateString('pt-BR'), left, y);
+    y += 6;
+    if (state.storeName) {
+      var nameLines = doc.splitTextToSize((MODE === 'pdf' ? 'Nome: ' : 'Cliente / loja: ') + state.storeName, right - left);
+      doc.text(nameLines, left, y);
+      y += nameLines.length * 5 + 1;
+    }
+    doc.setTextColor(0);
+    y += 4;
 
     var total = 0;
+    var groups = groupByCatalog(state.items);
     CATALOG_ORDER.forEach(function (cat) {
-      var items = groups[cat];
-      if (!items || !items.length) return;
-      lines.push('');
-      lines.push('*' + CATALOG_LABELS[cat].toUpperCase() + '*');
+      var list = groups[cat];
+      if (!list || !list.length) return;
+
+      ensureSpace(16);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(12);
+      doc.setTextColor(0);
+      doc.text(CATALOG_LABELS[cat], left, y);
+      y += 7;
+
       var subtotal = 0;
-      items.forEach(function (it, idx) {
+      list.forEach(function (it, idx) {
         var lineTotal = it.qty * it.unitPrice;
         subtotal += lineTotal;
-        var label = it.name + (it.variant ? ' — ' + it.variant : '');
-        lines.push((idx + 1) + '. ' + label
-          + ' | Qtd: ' + it.qty
-          + (it.sku ? ' | SKU: ' + it.sku : '')
-          + ' | ' + formatBRL(it.unitPrice) + ' un.'
-          + ' | Subtotal: ' + formatBRL(lineTotal));
+
+        var title = (idx + 1) + '. ' + it.name + (it.variant ? ' — ' + it.variant : '');
+        var maxW = right - (left + 2) - (SHOW_PRICE ? 34 : 0);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        var titleLines = doc.splitTextToSize(title, maxW);
+        ensureSpace(titleLines.length * 5 + 9);
+
+        doc.setTextColor(0);
+        doc.text(titleLines, left + 2, y);
+        if (SHOW_PRICE) {
+          doc.setFont('helvetica', 'bold');
+          doc.text(pdfMoney(lineTotal), right, y, { align: 'right' });
+          doc.setFont('helvetica', 'normal');
+        }
+        y += titleLines.length * 5;
+
+        var parts = ['Qtd: ' + it.qty];
+        if (it.sku) parts.push('SKU: ' + it.sku);
+        if (SHOW_PRICE) parts.push(pdfMoney(it.unitPrice) + ' un.');
+        doc.setTextColor(110);
+        doc.text(parts.join('   |   '), left + 4, y);
+        y += 7;
       });
-      lines.push('Subtotal ' + CATALOG_LABELS[cat] + ': ' + formatBRL(subtotal));
-      total += subtotal;
+
+      if (SHOW_PRICE) {
+        ensureSpace(10);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.setTextColor(0);
+        doc.text('Subtotal ' + CATALOG_LABELS[cat], left, y);
+        doc.text(pdfMoney(subtotal), right, y, { align: 'right' });
+        y += 9;
+        total += subtotal;
+      } else {
+        y += 2;
+      }
     });
 
-    lines.push('');
-    lines.push('*TOTAL GERAL: ' + formatBRL(total) + '*');
-    lines.push('');
-    lines.push('Pedido gerado via chumbada.com.br');
-    return lines.join('\n');
-  }
-
-  function copyToClipboard(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch(function () { fallbackCopy(text); });
-    } else {
-      fallbackCopy(text);
+    if (SHOW_PRICE) {
+      ensureSpace(16);
+      doc.setDrawColor(200);
+      doc.line(left, y, right, y);
+      y += 8;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.setTextColor(0);
+      doc.text('TOTAL GERAL', left, y);
+      doc.text(pdfMoney(total), right, y, { align: 'right' });
     }
+
+    var pages = doc.getNumberOfPages();
+    for (var p = 1; p <= pages; p++) {
+      doc.setPage(p);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(150);
+      doc.text('chumbada.com.br', left, pageH - 10);
+      doc.text('Página ' + p + ' de ' + pages, right, pageH - 10, { align: 'right' });
+    }
+
+    return doc;
   }
 
-  function fallbackCopy(text) {
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    try { document.execCommand('copy'); } catch (e) { /* no-op */ }
-    document.body.removeChild(ta);
+  function makePdf() {
+    return { blob: buildPdfDoc().output('blob'), name: pdfFileName() };
+  }
+
+  function triggerDownload(blob, name) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
 
   function openLink(url) {
@@ -507,109 +645,52 @@
     document.body.removeChild(a);
   }
 
-  function sendOrder() {
-    var text = buildMessage();
-    var encoded = encodeURIComponent(text);
-    var base = 'https://wa.me/' + WHATSAPP_NUMBER;
-    var url;
+  function pdfFailed() {
+    showToast('Não deu pra gerar o PDF agora, tenta de novo.');
+  }
 
-    if (encoded.length > WHATSAPP_TEXT_LIMIT) {
-      copyToClipboard(text);
-      url = base;
-      showToast('Lista copiada! Cole (Ctrl+V) na conversa que vai abrir.');
-    } else {
-      url = base + '?text=' + encoded;
+  // Runs fn right away when jsPDF is already loaded (keeps the tap's share
+  // permission intact); otherwise loads it first.
+  function runWithJsPdf(fn) {
+    function safe() {
+      try { fn(); } catch (e) { pdfFailed(); }
     }
-
-    openLink(url);
-    closeDrawer();
+    if (window.jspdf && window.jspdf.jsPDF) safe();
+    else loadJsPdf().then(safe).catch(pdfFailed);
   }
 
-  // ---------------------------------------------------------------------
-  // PDF export (sem-preço catalogs)
-  // ---------------------------------------------------------------------
-
-  var jsPdfLoading = null;
-
-  function loadJsPdf() {
-    if (window.jspdf && window.jspdf.jsPDF) return Promise.resolve();
-    if (jsPdfLoading) return jsPdfLoading;
-    jsPdfLoading = new Promise(function (resolve, reject) {
-      var script = document.createElement('script');
-      script.src = JSPDF_URL;
-      script.onload = function () { resolve(); };
-      script.onerror = function () { reject(new Error('failed to load jsPDF')); };
-      document.head.appendChild(script);
+  function downloadPdf() {
+    runWithJsPdf(function () {
+      var pdf = makePdf();
+      triggerDownload(pdf.blob, pdf.name);
+      showToast('PDF baixado!');
     });
-    return jsPdfLoading;
   }
 
-  function exportPdf() {
-    loadJsPdf().then(function () {
-      var doc = new window.jspdf.jsPDF();
-      var pageHeight = doc.internal.pageSize.getHeight();
-      var marginBottom = 20;
-      var y = 18;
+  // No share sheet with file support (most desktop browsers): download the
+  // PDF and open the salesperson's chat so the customer can attach it.
+  function shareFallback(pdf) {
+    triggerDownload(pdf.blob, pdf.name);
+    showToast('PDF baixado! Anexe ele na conversa do WhatsApp que vai abrir.', 5000);
+    openLink('https://wa.me/' + WHATSAPP_NUMBER + '?text=' + encodeURIComponent('Olá! Segue meu pedido em PDF (em anexo).'));
+  }
 
-      function ensureSpace(lines) {
-        if (y + lines * 6 > pageHeight - marginBottom) {
-          doc.addPage();
-          y = 18;
-        }
-      }
+  function sharePdf() {
+    runWithJsPdf(function () {
+      var pdf = makePdf();
+      var data = null;
+      try {
+        data = { files: [new File([pdf.blob], pdf.name, { type: 'application/pdf' })], title: 'Pedido Chumbada Oficial' };
+      } catch (e) { /* File constructor unavailable */ }
 
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(16);
-      doc.text('Minha Seleção — Chumbada Oficial', 14, y);
-      y += 8;
-
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      doc.setTextColor(120);
-      doc.text('Gerado em ' + new Date().toLocaleDateString('pt-BR'), 14, y);
-      y += 6;
-      if (state.storeName) {
-        doc.text('Nome: ' + state.storeName, 14, y);
-        y += 6;
-      }
-      doc.setTextColor(0);
-      y += 4;
-
-      var groups = groupByCatalog(state.items);
-      CATALOG_ORDER.forEach(function (cat) {
-        var list = groups[cat];
-        if (!list || !list.length) return;
-
-        ensureSpace(2);
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(12);
-        doc.text(CATALOG_LABELS[cat], 14, y);
-        y += 7;
-
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(10);
-        list.forEach(function (it, idx) {
-          ensureSpace(2);
-          var line1 = (idx + 1) + '. ' + it.name + (it.variant ? ' — ' + it.variant : '');
-          var line2Parts = ['Qtd: ' + it.qty];
-          if (it.sku) line2Parts.push('SKU: ' + it.sku);
-          doc.setTextColor(0);
-          doc.text(line1, 16, y);
-          y += 5;
-          doc.setTextColor(110);
-          doc.text(line2Parts.join('   |   '), 18, y);
-          y += 7;
+      if (data && navigator.share && navigator.canShare && navigator.canShare(data)) {
+        navigator.share(data).catch(function (err) {
+          if (err && err.name === 'AbortError') return; // customer closed the share sheet
+          shareFallback(pdf);
         });
-        y += 2;
-      });
-
-      doc.setTextColor(150);
-      doc.setFontSize(9);
-      doc.text('chumbada.com.br', 14, pageHeight - 10);
-
-      doc.save('minha-selecao-chumbada.pdf');
-    }).catch(function () {
-      showToast('Não deu pra gerar o PDF agora, tenta de novo.');
+      } else {
+        shareFallback(pdf);
+      }
     });
   }
 
