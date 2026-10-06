@@ -108,6 +108,12 @@
     return (Number(n) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   }
 
+  // O export do Shopify guarda SKUs numéricos com um apóstrofo na frente (truque do
+  // Excel para não virar número); ele não faz parte do código.
+  function cleanSku(sku) {
+    return String(sku || '').replace(/^'+/, '').trim();
+  }
+
   function subtotalOf(items) {
     return items.reduce(function (sum, it) { return sum + it.qty * it.unitPrice; }, 0);
   }
@@ -270,7 +276,7 @@
             + '<div class="ms-row-info">'
             + '<p class="ms-row-name">' + escapeHTML(it.name) + '</p>'
             + (it.variant ? '<p class="ms-row-variant">' + escapeHTML(it.variant) + '</p>' : '')
-            + (it.sku ? '<p class="ms-row-sku">SKU: ' + escapeHTML(it.sku) + '</p>' : '')
+            + (cleanSku(it.sku) ? '<p class="ms-row-sku">SKU: ' + escapeHTML(cleanSku(it.sku)) + '</p>' : '')
             + (SHOW_PRICE ? '<p class="ms-row-price">' + formatBRL(it.unitPrice) + ' un.</p>' : '')
             + '</div>'
             + '<div class="ms-row-controls">'
@@ -574,7 +580,7 @@
         y += titleLines.length * 5;
 
         var parts = ['Qtd: ' + it.qty];
-        if (it.sku) parts.push('SKU: ' + it.sku);
+        if (cleanSku(it.sku)) parts.push('SKU: ' + cleanSku(it.sku));
         if (SHOW_PRICE) parts.push(pdfMoney(it.unitPrice) + ' un.');
         doc.setTextColor(110);
         doc.text(parts.join('   |   '), left + 4, y);
