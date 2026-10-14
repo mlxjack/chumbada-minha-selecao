@@ -194,14 +194,16 @@ export default {
       return new Response('Method not allowed', { status: 405, headers: corsHeaders(origin) });
     }
 
-    // One IP can't hammer the Worker (and burn the free-plan daily quota for
-    // everyone). Fails open: if the limiter itself errors, customers still
-    // get served.
+    // Slows down an IP that keeps hammering the Worker. Cloudflare's counters
+    // are per location and eventually consistent: short bursts get through and
+    // it only bites after ~10 s of sustained traffic (measured: ~75% of an
+    // 80 req/s flood answered 429). 429s still count against the daily Worker
+    // quota, so this is damage control, not a hard quota guard. Fails open: if
+    // the limiter itself errors, customers still get served.
     if (env.RATE_LIMITER) {
       try {
-        const { success } = await env.RATE_LIMITER.limit({
-          key: request.headers.get('CF-Connecting-IP') || 'unknown',
-        });
+        const key = request.headers.get('CF-Connecting-IP') || 'unknown';
+        const { success } = await env.RATE_LIMITER.limit({ key });
         if (!success) {
           return Response.json(
             { ok: false, error: 'rate limited' },
@@ -209,7 +211,8 @@ export default {
           );
         }
       } catch (e) {
-        // ignore — see comment above
+        // fail open (see comment above), but leave a trace in `wrangler tail`
+        console.error('rate limiter error', e && e.message);
       }
     }
 
