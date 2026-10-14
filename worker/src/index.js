@@ -36,6 +36,56 @@ function isValidSid(sid) {
   return typeof sid === 'string' && /^[a-zA-Z0-9-]{10,80}$/.test(sid);
 }
 
+// Limits — the Origin check only stops other websites in a browser; anything
+// can still call the Worker directly with a forged Origin, so every size and
+// count is capped here instead of trusting what the client sends.
+const MAX_BODY_BYTES = 8 * 1024;
+const MAX_ITEMS = 300;
+const MAX_QTY = 9999;
+const MAX_UNIT_PRICE = 100000;
+const MAX_STORE_NAME = 120;
+const FIELD_LIMITS = { productId: 80, name: 200, sku: 60, variant: 120 };
+const CATALOGS = new Set(['iscas', 'anzois', 'chumbadas', 'acessorios', 'oculos']);
+
+class LimitError extends Error {}
+
+function clip(value, max) {
+  return (value == null ? '' : String(value)).slice(0, max);
+}
+
+function clampQty(value) {
+  return Math.min(MAX_QTY, Math.max(1, Math.floor(Number(value) || 1)));
+}
+
+function cleanPrice(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(MAX_UNIT_PRICE, Math.max(0, Math.round(n * 100) / 100));
+}
+
+// Reads the request body but gives up as soon as it passes the limit, so an
+// oversized (or chunked, no Content-Length) upload is never fully buffered.
+async function readCappedText(request, maxBytes) {
+  const declared = Number(request.headers.get('Content-Length'));
+  if (declared > maxBytes) return null;
+  if (!request.body) return '';
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 function normalizeVariant(v) {
   return (v || '')
     .toString()
@@ -63,7 +113,15 @@ export class CartSession {
   async fetch(request) {
     const body = await request.json();
     const stored = (await this.ctx.storage.get('cart')) || { storeName: '', items: [] };
-    const next = handle(body.type, body.payload, stored);
+    let next;
+    try {
+      next = handle(body.type, body.payload, stored);
+    } catch (e) {
+      if (e instanceof LimitError) {
+        return Response.json({ ok: false, error: e.message, state: stored }, { status: 422 });
+      }
+      throw e;
+    }
     await this.ctx.storage.put('cart', next);
     return Response.json({ ok: true, state: next });
   }
@@ -75,35 +133,35 @@ function handle(type, payload, state) {
       return state;
 
     case 'SET_STORE_NAME':
-      state.storeName = ((payload && payload.storeName) || '').slice(0, 120);
+      state.storeName = clip(payload && payload.storeName, MAX_STORE_NAME);
       return state;
 
     case 'ADD_ITEM': {
-      const item = payload || {};
+      const raw = payload || {};
+      if (!CATALOGS.has(raw.catalog)) throw new LimitError('unknown catalog');
+      const item = {
+        catalog: raw.catalog,
+        productId: clip(raw.productId, FIELD_LIMITS.productId),
+        name: clip(raw.name, FIELD_LIMITS.name),
+        sku: raw.sku ? clip(raw.sku, FIELD_LIMITS.sku) : null,
+        variant: clip(raw.variant, FIELD_LIMITS.variant),
+      };
       const id = computeItemId(item);
-      const qty = Math.max(1, Math.floor(Number(item.qty) || 1));
+      const qty = clampQty(raw.qty);
       const existing = state.items.find((it) => it.id === id);
       if (existing) {
-        existing.qty += qty;
+        existing.qty = Math.min(MAX_QTY, existing.qty + qty);
       } else {
-        state.items.push({
-          id,
-          catalog: item.catalog,
-          productId: item.productId || '',
-          name: item.name || '',
-          sku: item.sku || null,
-          variant: item.variant || '',
-          qty,
-          unitPrice: Number(item.unitPrice) || 0,
-        });
+        if (state.items.length >= MAX_ITEMS) throw new LimitError('cart full');
+        state.items.push({ id, ...item, qty, unitPrice: cleanPrice(raw.unitPrice) });
       }
       return state;
     }
 
     case 'ADJUST_QTY': {
-      const delta = Math.floor(Number((payload || {}).delta) || 0);
+      const delta = Math.max(-MAX_QTY, Math.min(MAX_QTY, Math.floor(Number((payload || {}).delta) || 0)));
       const target = state.items.find((it) => it.id === (payload || {}).id);
-      if (target) target.qty = Math.max(1, target.qty + delta);
+      if (target) target.qty = Math.min(MAX_QTY, Math.max(1, target.qty + delta));
       return state;
     }
 
@@ -136,10 +194,21 @@ export default {
       return new Response('Method not allowed', { status: 405, headers: corsHeaders(origin) });
     }
 
+    const text = await readCappedText(request, MAX_BODY_BYTES);
+    if (text === null) {
+      return Response.json(
+        { ok: false, error: 'payload too large' },
+        { status: 413, headers: corsHeaders(origin) }
+      );
+    }
+
     let body;
     try {
-      body = await request.json();
+      body = JSON.parse(text);
     } catch (e) {
+      body = null;
+    }
+    if (!body || typeof body !== 'object' || typeof body.type !== 'string') {
       return Response.json(
         { ok: false, error: 'invalid json' },
         { status: 400, headers: corsHeaders(origin) }

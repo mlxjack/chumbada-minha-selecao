@@ -78,6 +78,10 @@
   // with stale data even though the server's own data is correct.
   var callSeq = 0;
   var appliedSeq = 0;
+  // Error code from the Worker's last answer ('cart full', ...), or null when
+  // it succeeded. Lets addItem tell the customer when the list is at its cap
+  // instead of claiming the item was added.
+  var lastError = null;
 
   function call(type, payload) {
     var thisSeq = ++callSeq;
@@ -88,6 +92,7 @@
     })
       .then(function (r) { return r.json(); })
       .then(function (json) {
+        lastError = json && !json.ok ? (json.error || 'error') : null;
         if (json && json.ok && thisSeq > appliedSeq) {
           appliedSeq = thisSeq;
           state = json.state;
@@ -96,6 +101,7 @@
         return state;
       })
       .catch(function () {
+        lastError = 'network';
         return state;
       });
   }
@@ -707,7 +713,13 @@
   window.MinhaSelecao = {
     addItem: function (item) {
       return call('ADD_ITEM', item).then(function () {
-        showToast('Adicionado à Minha Seleção');
+        if (lastError === 'cart full') {
+          showToast('Lista cheia (máx. 300 itens) — remova algum item para adicionar');
+        } else if (lastError) {
+          showToast('Não foi possível adicionar. Tente de novo.');
+        } else {
+          showToast('Adicionado à Minha Seleção');
+        }
       });
     },
     openDrawer: openDrawer,
