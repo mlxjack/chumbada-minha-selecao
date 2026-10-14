@@ -194,6 +194,25 @@ export default {
       return new Response('Method not allowed', { status: 405, headers: corsHeaders(origin) });
     }
 
+    // One IP can't hammer the Worker (and burn the free-plan daily quota for
+    // everyone). Fails open: if the limiter itself errors, customers still
+    // get served.
+    if (env.RATE_LIMITER) {
+      try {
+        const { success } = await env.RATE_LIMITER.limit({
+          key: request.headers.get('CF-Connecting-IP') || 'unknown',
+        });
+        if (!success) {
+          return Response.json(
+            { ok: false, error: 'rate limited' },
+            { status: 429, headers: { ...corsHeaders(origin), 'Retry-After': '30' } }
+          );
+        }
+      } catch (e) {
+        // ignore — see comment above
+      }
+    }
+
     const text = await readCappedText(request, MAX_BODY_BYTES);
     if (text === null) {
       return Response.json(
