@@ -6,6 +6,14 @@ compatibility_date = "2025-01-01"
 name = "CART"
 class_name = "CartSession"
 
+# Per-IP request cap (checked in src/index.js, answers 429). Counters are kept per
+# Cloudflare location, so this blunts floods from a single source rather than
+# being an exact global quota.
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 200, period = 60 }
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CartSession"]

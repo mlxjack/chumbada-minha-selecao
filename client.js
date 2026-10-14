@@ -24,6 +24,11 @@
   var WHATSAPP_NUMBER = '5511941900602';
   var HUB_HOSTNAME = window.MINHA_SELECAO_HUB_HOSTNAME || 'catalogosdeprecos.chumbada.com.br';
   var JSPDF_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js';
+  // Subresource Integrity: the browser refuses the file if a single byte
+  // differs, so a compromised CDN can't inject code into every catalog.
+  // Matches dist/jspdf.umd.min.js from the npm package jspdf@2.5.2 — when
+  // bumping JSPDF_URL, recompute this hash (openssl dgst -sha384 -binary | base64).
+  var JSPDF_SRI = 'sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/';
 
   var CATALOG_LABELS = {
     iscas: 'Iscas',
@@ -483,6 +488,8 @@
     jsPdfLoading = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
       script.src = JSPDF_URL;
+      script.integrity = JSPDF_SRI;
+      script.crossOrigin = 'anonymous';
       script.onload = function () { resolve(); };
       script.onerror = function () {
         jsPdfLoading = null;
