@@ -331,20 +331,16 @@
       footHtml += '<div class="ms-total-row"><span>Total</span><span>' + formatBRL(subtotal) + '</span></div>';
     }
     footHtml += '<button class="ms-clear-all"' + (canSend ? '' : ' disabled') + '>Limpar lista</button>';
-    if (MODE === 'pdf') {
-      footHtml += '<button class="ms-send"' + (canSend ? '' : ' disabled') + '>Salvar como PDF</button>';
-    } else {
-      footHtml += '<div class="ms-actions">'
-        + '<button class="ms-send"' + (canSend ? '' : ' disabled') + '>Compartilhar PDF</button>'
-        + '<button class="ms-dl"' + (canSend ? '' : ' disabled') + '>Baixar PDF</button>'
-        + '</div>';
-    }
+    footHtml += '<div class="ms-actions">'
+      + '<button class="ms-send"' + (canSend ? '' : ' disabled') + '>Compartilhar PDF</button>'
+      + '<button class="ms-dl"' + (canSend ? '' : ' disabled') + '>Baixar PDF</button>'
+      + '</div>';
 
     footEl.innerHTML = footHtml;
 
     footEl.querySelector('.ms-send').addEventListener('click', function () {
       if (!canSend) return;
-      if (MODE === 'pdf') downloadPdf(); else sharePdf();
+      sharePdf();
     });
 
     var dlBtn = footEl.querySelector('.ms-dl');
@@ -687,9 +683,15 @@
   }
 
   // No share sheet with file support (most desktop browsers): download the
-  // PDF and open the salesperson's chat so the customer can attach it.
+  // PDF and, on the priced catalogs, open the salesperson's chat so the
+  // customer can attach it.
   function shareFallback(pdf) {
     triggerDownload(pdf.blob, pdf.name);
+    // Catálogos sem preço não têm vendedora fixa: só baixa o PDF.
+    if (MODE === 'pdf') {
+      showToast('PDF baixado! Se não achar o arquivo, abra o catálogo no Chrome ou no Safari.', 5000);
+      return;
+    }
     showToast('PDF baixado! Anexe ele na conversa do WhatsApp que vai abrir.', 5000);
     openLink('https://wa.me/' + WHATSAPP_NUMBER + '?text=' + encodeURIComponent('Olá! Segue meu pedido em PDF (em anexo).'));
   }
