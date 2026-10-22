@@ -6,8 +6,9 @@ const ALLOWED_ORIGINS = new Set([
   'https://precodosacessorios.chumbada.com.br',
   'https://precodosoculos.chumbada.com.br',
   'https://catalogosdeprecos.chumbada.com.br',
-  // Site Pesqueiro (com preço) — mesma lista "Minha Seleção" em modo WhatsApp
+  // Site Pesqueiro — precopesqueiro = com preço (modo WhatsApp); pesqueiro = sem preço (modo PDF)
   'https://pesqueiro.chumbada.com.br',
+  'https://precopesqueiro.chumbada.com.br',
   // Catálogos sem preço — lista "Minha Seleção" (modo PDF)
   'https://iscas.chumbada.com.br',
   'https://anzois.chumbada.com.br',
