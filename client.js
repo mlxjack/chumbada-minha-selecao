@@ -772,7 +772,7 @@
   'use strict';
   if (window.ChumbadaTrack) return;
 
-  var ENDPOINT = (window.CHUMBADA_ANALYTICS_URL || 'https://chumbada-analytics.chumbada-oficial.workers.dev') + '/e';
+  var ENDPOINT = (window.CHUMBADA_ANALYTICS_URL || 'https://analytics.chumbada-oficial.workers.dev') + '/e';
   var HOSTS = {
     'precodasiscas': 'iscas', 'iscas': 'iscas',
     'precosdosanzois': 'anzois', 'anzois': 'anzois',
