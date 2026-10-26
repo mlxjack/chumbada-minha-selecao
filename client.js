@@ -754,3 +754,177 @@
     boot();
   }
 })();
+
+
+/* ===== Hub de Análise: coletor de visitas (hub-analytics/tracker.js) ===== */
+/*
+ * Chumbada Oficial — coletor de eventos dos catálogos (alimenta o Hub de Análise).
+ * Sem IP, sem dados pessoais: só ids aleatórios em cookie de 1ª parte.
+ * Detecta sozinho: catálogo (pelo domínio), visualização de produto (pela rota #/produto/<slug>),
+ * dispositivo, origem/UTM e os cliques de Minha Seleção / PDF / WhatsApp.
+ * API para os catálogos informarem o que não dá para adivinhar:
+ *   ChumbadaTrack.variant({ type:'cor', value:'Azul', source:'user'|'auto' })   // source obrigatório
+ *   ChumbadaTrack.event('view_3d' | 'view_ar' | 'quote_request' | 'category_view', { category })
+ * Atalho sem JS: <button data-track-variant="cor:Azul"> — clique = variação escolhida pelo visitante.
+ * Equipe: abrir qualquer catálogo com ?notrack=1 para não contar as próprias visitas (?notrack=0 desfaz).
+ */
+(function () {
+  'use strict';
+  if (window.ChumbadaTrack) return;
+
+  var ENDPOINT = (window.CHUMBADA_ANALYTICS_URL || 'https://chumbada-analytics.chumbada-oficial.workers.dev') + '/e';
+  var HOSTS = {
+    'precodasiscas': 'iscas', 'iscas': 'iscas',
+    'precosdosanzois': 'anzois', 'anzois': 'anzois',
+    'precodaschumbadas': 'chumbadas', 'chumbadas': 'chumbadas',
+    'precodosacessorios': 'acessorios', 'acessorios': 'acessorios',
+    'precodosoculos': 'oculos', 'oculos': 'oculos',
+    'precopesqueiro': 'pesqueiro', 'pesqueiro': 'pesqueiro',
+    'catalogosdeprecos': 'hub', 'catalogos': 'hub'
+  };
+  var MODE = window.MINHA_SELECAO_MODE === 'pdf' ? 'sem-precos' : 'precos';
+
+  // ---- opt-out da equipe -------------------------------------------------
+  try {
+    var m = /[?&]notrack=([01])/.exec(location.search);
+    if (m) localStorage.setItem('chumbada_notrack', m[1]);
+    if (localStorage.getItem('chumbada_notrack') === '1') return;
+  } catch (e) { /* storage bloqueado: segue */ }
+  if (navigator.doNotTrack === '1') return;
+
+  // ---- ids ---------------------------------------------------------------
+  function rid() {
+    var a = new Uint8Array(12);
+    (window.crypto || {}).getRandomValues ? crypto.getRandomValues(a) : a.forEach(function (_, i) { a[i] = Math.random() * 256; });
+    return Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+  }
+  function cookie(n) { var r = new RegExp('(?:^|; )' + n + '=([^;]*)').exec(document.cookie); return r && r[1]; }
+  function setCookie(n, v, days) {
+    var d = /\.chumbada\.com\.br$/.test(location.hostname) ? '; Domain=.chumbada.com.br' : '';
+    document.cookie = n + '=' + v + '; Path=/; Max-Age=' + days * 86400 + '; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '') + d;
+  }
+  var vid = cookie('chumbada_vid') || rid();
+  setCookie('chumbada_vid', vid, 400);
+  // visita nova após 30 min sem atividade
+  var sid = cookie('chumbada_sid') || rid();
+  function touchSession() { setCookie('chumbada_sid', sid, 1 / 48); }
+  touchSession();
+
+  // ---- contexto ----------------------------------------------------------
+  var sub = location.hostname.split('.')[0];
+  var CATALOG = window.CHUMBADA_CATALOG || HOSTS[sub] || null;
+  if (!CATALOG) return; // domínio desconhecido: não coleta
+
+  var device = (function () {
+    var ua = navigator.userAgent;
+    if (/iPad|Tablet|PlayBook|Silk/.test(ua) || (/Android/.test(ua) && !/Mobile/.test(ua))) return 'tablet';
+    if (/Mobi|iPhone|Android/.test(ua)) return 'mobile';
+    return 'desktop';
+  })();
+
+  var ctx = (function () {
+    var p = new URLSearchParams(location.search);
+    var stored = null;
+    try { stored = JSON.parse(sessionStorage.getItem('chumbada_ctx')); } catch (e) { /* ignore */ }
+    if (stored) return stored;
+    var ref = '';
+    try { ref = document.referrer ? new URL(document.referrer).hostname.replace(/^www\./, '') : ''; } catch (e) { /* ignore */ }
+    if (/chumbada\.com\.br$/.test(ref)) ref = '';
+    var c = { src: p.get('utm_source') || ref || 'direto', medium: p.get('utm_medium') || (ref ? 'referral' : null), campaign: p.get('utm_campaign') || null };
+    try { sessionStorage.setItem('chumbada_ctx', JSON.stringify(c)); } catch (e) { /* ignore */ }
+    return c;
+  })();
+
+  // ---- fila / envio --------------------------------------------------------
+  var queue = [];
+  var timer = null;
+  function flush() {
+    timer = null;
+    if (!queue.length) return;
+    var body = JSON.stringify({ vid: vid, sid: sid, device: device, src: ctx.src, medium: ctx.medium, campaign: ctx.campaign, events: queue.splice(0, 20) });
+    try {
+      if (navigator.sendBeacon && navigator.sendBeacon(ENDPOINT, new Blob([body], { type: 'text/plain' }))) return;
+    } catch (e) { /* cai no fetch */ }
+    try { fetch(ENDPOINT, { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain' }, keepalive: true }); } catch (e) { /* analytics nunca quebra o site */ }
+  }
+  function send(ev, extra) {
+    touchSession();
+    var e = { ts: Date.now(), ev: ev, catalog: CATALOG, mode: MODE };
+    for (var k in extra) if (extra[k] != null) e[k] = extra[k];
+    queue.push(e);
+    if (!timer) timer = setTimeout(flush, 1200);
+  }
+  addEventListener('pagehide', flush);
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') flush(); });
+
+  // ---- produto atual (por rota) ------------------------------------------
+  var current = null;
+  function route() {
+    var m = /(?:#\/?|\/)(?:product|produto|produtos)\/([^\/?#]+)/.exec(location.hash || location.pathname);
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+  function nameOf() {
+    var h = document.querySelector('main h1, h1');
+    var t = (h && h.textContent || document.title || '').trim();
+    return t.replace(/\s*[|–-]\s*Chumbada.*$/i, '');
+  }
+  var lastKey = null;
+  function onRoute(first) {
+    var slug = route();
+    var key = slug ? CATALOG + ':' + slug : 'list';
+    if (key === lastKey) return;
+    lastKey = key;
+    if (!slug) { current = null; send('page_view', {}); return; }
+    // espera a rota renderizar para ler nome/categoria
+    setTimeout(function () {
+      var el = document.querySelector('[data-track-category]');
+      current = { product_id: key, product_name: nameOf() || slug, category: el ? el.getAttribute('data-track-category') : null };
+      send('product_view', current);
+    }, first ? 900 : 600);
+  }
+  addEventListener('hashchange', function () { onRoute(false); });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { onRoute(true); });
+  else onRoute(true);
+
+  // ---- API pública -------------------------------------------------------
+  function withProduct(o) {
+    var r = {};
+    if (current) { r.product_id = current.product_id; r.product_name = current.product_name; r.category = current.category; }
+    for (var k in o) if (o[k] != null) r[k] = o[k];
+    return r;
+  }
+  window.ChumbadaTrack = {
+    event: function (ev, o) { send(ev, withProduct(o || {})); },
+    variant: function (v) {
+      if (!v || !v.value || (v.source !== 'user' && v.source !== 'auto')) return; // sem fonte explícita, não registra
+      send(v.source === 'user' ? 'variant_select' : 'variant_view',
+        withProduct({ variant_type: v.type || null, variant_value: String(v.value), variant_source: v.source }));
+    }
+  };
+
+  // ---- interações detectadas por clique (delegação) ------------------------
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest && e.target.closest('[data-track-variant],.ms-send,.ms-dl,a[href*="wa.me"],.btn-whatsapp');
+    if (!t) return;
+    if (t.hasAttribute('data-track-variant')) {
+      var p = t.getAttribute('data-track-variant').split(':');
+      window.ChumbadaTrack.variant({ type: p.length > 1 ? p[0] : null, value: p.slice(-1)[0], source: 'user' });
+    } else if (t.classList.contains('ms-send')) send('pdf_generate', withProduct({}));
+    else if (t.classList.contains('ms-dl')) send('pdf_download', withProduct({}));
+    else send('whatsapp_click', withProduct({}));
+  }, true);
+
+  // adicionar à Minha Seleção: encapsula a API existente quando ela aparecer
+  var tries = 0;
+  (function hook() {
+    var ms = window.MinhaSelecao;
+    if (ms && ms.addItem && !ms.__tracked) {
+      var orig = ms.addItem;
+      ms.addItem = function (item) {
+        send('select_add', withProduct({ variant_type: item && item.variant ? 'variacao' : null, variant_value: item && item.variant || null, variant_source: item && item.variant ? 'user' : null }));
+        return orig.apply(this, arguments);
+      };
+      ms.__tracked = true;
+    } else if (++tries < 40) setTimeout(hook, 250);
+  })();
+})();

@@ -109,14 +109,16 @@ function computeItemId(item) {
 // same customer having several catalog tabs open at once — no explicit
 // locking needed, unlike the old iframe+localStorage bridge.
 export class CartSession {
-  constructor(ctx) {
+  constructor(ctx, env) {
     this.ctx = ctx;
+    this.env = env;
   }
 
   async fetch(request) {
     const body = await request.json();
     const stored = (await this.ctx.storage.get('cart')) || { storeName: '', items: [] };
     let next;
+    const before = JSON.parse(JSON.stringify(stored));
     try {
       next = handle(body.type, body.payload, stored);
     } catch (e) {
@@ -126,9 +128,52 @@ export class CartSession {
       throw e;
     }
     await this.ctx.storage.put('cart', next);
+    this.ctx.waitUntil(logCartEvent(this.env, body.meta, body.type, body.payload, before, next));
     return Response.json({ ok: true, state: next });
   }
 }
+
+// Hub de Análise: registra cada mudança da lista no banco de análise. Nunca pode
+// atrapalhar o cliente — qualquer erro aqui é só engolido (e aparece no `wrangler tail`).
+async function logCartEvent(env, meta, type, payload, before, after) {
+  try {
+    if (!env.ANALYTICS_DB || !meta) return;
+    const totals = (st) => ({
+      items: st.items.length,
+      qty: st.items.reduce((n, it) => n + it.qty, 0),
+      value: st.items.reduce((n, it) => n + it.qty * (it.unitPrice || 0), 0),
+    });
+    const t = totals(after);
+    let op = null, item = null, qty = 0;
+    if (type === 'ADD_ITEM') {
+      op = 'add';
+      item = after.items.find((it) => it.id === computeItemId({ ...(payload || {}), productId: clip(payload.productId, FIELD_LIMITS.productId), sku: payload.sku ? clip(payload.sku, FIELD_LIMITS.sku) : null, variant: clip(payload.variant, FIELD_LIMITS.variant) }));
+      qty = clampQty(payload.qty);
+    } else if (type === 'ADJUST_QTY') {
+      const was = before.items.find((it) => it.id === (payload || {}).id);
+      item = after.items.find((it) => it.id === (payload || {}).id);
+      if (!was || !item || was.qty === item.qty) return;
+      op = 'qty'; qty = item.qty - was.qty;
+    } else if (type === 'REMOVE_ITEM') {
+      item = before.items.find((it) => it.id === (payload || {}).id);
+      if (!item) return;
+      op = 'remove'; qty = item.qty;
+    } else if (type === 'CLEAR') {
+      if (!before.items.length) return;
+      op = 'clear'; qty = totals(before).qty;
+    } else return;
+    await env.ANALYTICS_DB.prepare(
+      `INSERT INTO cart_events (ts,cart_sid,mode,op,catalog,product_id,product_name,sku,variant,qty,unit_price,cart_items,cart_qty,cart_value)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(Date.now(), meta.sid, meta.mode, op, item ? item.catalog : null, item ? item.productId : null, item ? item.name : null,
+      item ? item.sku : null, item ? item.variant : null, qty, item && meta.mode === 'whatsapp' ? item.unitPrice : null, t.items, t.qty, meta.mode === 'whatsapp' ? t.value : null).run();
+  } catch (e) {
+    console.error('analytics log failed', e && e.message);
+  }
+}
+
+// Origens dos catálogos SEM preço (lista → PDF); as demais são "Minha Seleção" → WhatsApp.
+const PDF_ORIGINS = new Set(['iscas', 'anzois', 'chumbadas', 'acessorios', 'oculos', 'catalogos', 'pesqueiro'].map((h) => 'https://' + h + '.chumbada.com.br'));
 
 function handle(type, payload, state) {
   switch (type) {
@@ -251,7 +296,7 @@ export default {
     const stub = env.CART.get(id);
     const doResponse = await stub.fetch('https://cart/', {
       method: 'POST',
-      body: JSON.stringify({ type: body.type, payload: body.payload }),
+      body: JSON.stringify({ type: body.type, payload: body.payload, meta: { sid: body.sid, mode: PDF_ORIGINS.has(origin) ? 'pdf' : 'whatsapp' } }),
     });
 
     const responseBody = await doResponse.text();
