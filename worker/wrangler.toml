@@ -17,3 +17,9 @@ simple = { limit = 200, period = 60 }
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CartSession"]
+
+# Hub de Análise: o Worker grava os eventos da lista no mesmo banco D1 do painel.
+[[d1_databases]]
+binding = "ANALYTICS_DB"
+database_name = "chumbada-analytics"
+database_id = "c1582832-1031-4ccd-84eb-bfd618893720"
