@@ -137,7 +137,7 @@ export class CartSession {
 // atrapalhar o cliente — qualquer erro aqui é só engolido (e aparece no `wrangler tail`).
 async function logCartEvent(env, meta, type, payload, before, after) {
   try {
-    if (!env.ANALYTICS_DB || !meta) return;
+    if (!env.ANALYTICS_DB || !meta || meta.notrack) return;
     const totals = (st) => ({
       items: st.items.length,
       qty: st.items.reduce((n, it) => n + it.qty, 0),
@@ -296,7 +296,7 @@ export default {
     const stub = env.CART.get(id);
     const doResponse = await stub.fetch('https://cart/', {
       method: 'POST',
-      body: JSON.stringify({ type: body.type, payload: body.payload, meta: { sid: body.sid, mode: PDF_ORIGINS.has(origin) ? 'pdf' : 'whatsapp' } }),
+      body: JSON.stringify({ type: body.type, payload: body.payload, meta: { sid: body.sid, mode: PDF_ORIGINS.has(origin) ? 'pdf' : 'whatsapp', notrack: body.notrack === 1 } }),
     });
 
     const responseBody = await doResponse.text();
