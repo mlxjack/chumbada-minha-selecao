@@ -93,7 +93,7 @@
     return fetch(WORKER_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sid: getSid(), type: type, payload: payload })
+      body: JSON.stringify({ sid: getSid(), type: type, payload: payload, notrack: /(?:^|; )chumbada_notrack=1/.test(document.cookie) ? 1 : undefined })
     })
       .then(function (r) { return r.json(); })
       .then(function (json) {
@@ -766,7 +766,7 @@
  *   ChumbadaTrack.variant({ type:'cor', value:'Azul', source:'user'|'auto' })   // source obrigatório
  *   ChumbadaTrack.event('view_3d' | 'view_ar' | 'quote_request' | 'category_view', { category })
  * Atalho sem JS: <button data-track-variant="cor:Azul"> — clique = variação escolhida pelo visitante.
- * Equipe: abrir qualquer catálogo com ?notrack=1 para não contar as próprias visitas (?notrack=0 desfaz).
+ * Equipe: abrir qualquer catálogo *.chumbada.com.br com ?notrack=1 (vale para todos os catálogos; ?notrack=0 desfaz).
  */
 (function () {
   'use strict';
@@ -785,11 +785,15 @@
   var MODE = window.MINHA_SELECAO_MODE === 'pdf' ? 'sem-precos' : 'precos';
 
   // ---- opt-out da equipe -------------------------------------------------
+  // Cookie em .chumbada.com.br: vale para TODOS os catálogos de uma vez e também para a Minha Seleção.
   try {
     var m = /[?&]notrack=([01])/.exec(location.search);
-    if (m) localStorage.setItem('chumbada_notrack', m[1]);
-    if (localStorage.getItem('chumbada_notrack') === '1') return;
-  } catch (e) { /* storage bloqueado: segue */ }
+    if (m) {
+      var dom = /\.chumbada\.com\.br$/.test(location.hostname) ? '; Domain=.chumbada.com.br' : '';
+      document.cookie = 'chumbada_notrack=' + m[1] + '; Path=/; Max-Age=' + (m[1] === '1' ? 315360000 : 0) + '; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '') + dom;
+    }
+  } catch (e) { /* ignore */ }
+  if (/(?:^|; )chumbada_notrack=1/.test(document.cookie)) return;
   if (navigator.doNotTrack === '1') return;
 
   // ---- ids ---------------------------------------------------------------
